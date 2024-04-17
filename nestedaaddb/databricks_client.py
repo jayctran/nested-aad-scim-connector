@@ -1,5 +1,6 @@
 import json
 import requests
+import os
 
 '''
 Databricks client to interact with Databricks SCIM API's
@@ -11,10 +12,13 @@ class DatabricksClient:
     dbbaseUrl: str
     dbscimToken: str
 
-    def __init__(self, config):
-        self.settings = config
-        self.dbbaseUrl = self.settings['dbbaseUrl']
-        self.dbscimToken = self.settings['dbscimToken']
+    def __init__(self):
+        self.dbbaseUrl = os.environ.get('DB_BASE_URL')
+        self.dbscimToken = os.environ.get('DB_SCIM_TOKEN')
+
+        if self.dbbaseUrl is None or self.dbscimToken is None:
+            print("Please set DB_BASE_URL and DB_SCIM_TOKEN environment variables")
+            exit(1)
 
     '''
     Get all the users on Databricks
@@ -39,8 +43,6 @@ class DatabricksClient:
                 'startIndex': start_index,
                 'count': count
             }
-
-
 
             response = requests.get(api_url, headers=my_headers, params=params).text
             users_data = json.loads(response)
@@ -89,8 +91,8 @@ class DatabricksClient:
     dbgroups : all databricks groups
     '''
 
-    def patch_dbgroup(self, gid, members, dbg, dbus, dbgroups, dryrun):
-        api_url = self.dbbaseUrl + "/Groups/" + gid
+    def patch_dbgroup(self, dbg, members, dbus, dbgroups, dryrun):
+        api_url = self.dbbaseUrl + "/Groups/" + dbg["id"]
         u = {
             "schemas": [
                 "urn:ietf:params:scim:api:messages:2.0:PatchOp"
@@ -100,7 +102,7 @@ class DatabricksClient:
         toadd = []
         toremove = []
 
-        if members is not None:
+        if members:
             for member in members:
                 print("-----1m-----")
                 print(member)
@@ -113,15 +115,21 @@ class DatabricksClient:
                         check if user or group exists
                         '''
 
-                        print("1.dbm is ")
-                        print(dbmember)
-                        #Note that dbmember response is coming from databricks group api calls which gives members
-                        #it does not have member email-only display
-                        # it display anme of user in AAD and Databricks must match
-                        #even if not matched it will just be added to the to add list
-                        if (member["type"] == "user" and member["data"][0].casefold() == dbmember["display"].casefold()) \
-                                or (member["type"] == "group" and member["data"].casefold() == dbmember[
-                            "display"].casefold()):
+                        # Retrieve username from db user within dbus matching on dbu["id"] and dbmember["value"]
+                        username_add = ""
+                        for dbu in dbus:
+                            if dbu["id"] == dbmember["value"]:
+                                username_add = dbu["userName"]
+                                break
+                        
+                        print(f"dbm is {dbmember}")
+
+                        # Note that dbmember response is coming from databricks group api calls which gives members
+                        # This does not have member email-only display
+                        # The display/user name of user in AAD and Databricks must match
+                        # Even if not matched it will just be added to the to add list
+                        if (member["type"] == "user" and member["data"][1].casefold() == username_add.casefold()) \
+                                or (member["type"] == "group" and member["data"].casefold() == dbmember["display"].casefold()):
                             exists = True
                             print("-----2m")
                             print(member)
@@ -134,10 +142,17 @@ class DatabricksClient:
         if "members" in dbg:
             for dbmember in dbg["members"]:
                 exists = False
+                
+                # Retrieve username from db user within dbus matching on dbu["id"] and dbmember["value"]
+                username_remove = ""
+                for dbu in dbus:
+                    if dbu["id"] == dbmember["value"]:
+                        username_remove = dbu["userName"]
+                        break
+
                 for member in members:
-                    if (member["type"] == "user" and member["data"][0].casefold() == dbmember["display"].casefold()) \
-                            or (
-                            member["type"] == "group" and member["data"].casefold() == dbmember["display"].casefold()):
+                    if (member["type"] == "user" and member["data"][1].casefold() == username_remove.casefold()) \
+                            or (member["type"] == "group" and member["data"].casefold() == dbmember["display"].casefold()):
                         exists = True
                         break
                 if not exists:
@@ -159,7 +174,8 @@ class DatabricksClient:
             return
 
         if len(toadd) > 0:
-            mem = []
+            dictsub = {'op': "add", 'path': "members", "value": []}
+            
             for member in toadd:
 
                 print("----15m-----Going to add user in group-----")
@@ -169,28 +185,23 @@ class DatabricksClient:
                 if member["type"] == "user":
                     for dbu in dbus:
                         if dbu["userName"].casefold() == member["data"][1].casefold():
-                            obj = dict()
-                            obj["value"] = dbu["id"]
-                            mem.append(obj)
+                            dictsub["value"].append({"value": dbu["id"]})
                             break
                 # or if it is a group
                 elif member["type"] == "group":
                     for dbgg in dbgroups["Resources"]:
                         if dbgg.get("displayName", "").casefold() == member["data"].casefold():
-                            obj = dict()
-                            obj["value"] = dbgg["id"]
-                            mem.append(obj)
+                            dictsub["value"].append({"value": dbgg["id"]})
                             break
 
-            dictmem = {"members": mem}
-            dictsub = {'op': "add", 'value': dictmem}
             ops.append(dictsub)
 
         if len(toremove) > 0:
 
+            dictsub = {'op': "remove", 'path': "members", "value": []}
             for member in toremove:
-                dictsub = {'op': "remove", 'path': "members[value eq \"" + member["value"] + "\""}
-                ops.append(dictsub)
+                dictsub["value"].append({"value": member["value"]})
+            ops.append(dictsub)
 
         gdata = json.loads(json.dumps(u))
         gdata["Operations"] = ops

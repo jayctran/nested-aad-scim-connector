@@ -1,14 +1,14 @@
-import json
+from azure.identity import DefaultAzureCredential
+from msgraph import GraphServiceClient
+from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
+from kiota_abstractions.base_request_configuration import RequestConfiguration
+import asyncio
 from collections import defaultdict
-from configparser import SectionProxy
-from azure.identity import DeviceCodeCredential, ClientSecretCredential
-from msgraph.core import GraphClient
 
 '''
 A wrapper for Graph to interact with Graph API's
 https://learn.microsoft.com/en-us/graph/overview
 '''
-
 
 class HashableDict(dict):
     def __hash__(self):
@@ -16,146 +16,102 @@ class HashableDict(dict):
 
 
 class Graph:
-    settings: SectionProxy
-    device_code_credential: DeviceCodeCredential
-    user_client: GraphClient
-    client_credential: ClientSecretCredential
-    app_client: GraphClient
+    client: GraphServiceClient
+    loop: asyncio.AbstractEventLoop
 
-    def __init__(self, config: SectionProxy):
-        self.settings = config
-        client_id = self.settings['clientId']
-        tenant_id = self.settings['authTenant']
-
-        self.device_code_credential = DeviceCodeCredential(client_id, tenant_id=tenant_id)
-        self.user_client = GraphClient(credential=self.device_code_credential)
+    def __init__(self, loop):
+        self.loop = loop
+        self.credential = DefaultAzureCredential()
+        self.scopes = ['https://graph.microsoft.com/.default']
+        self.client = GraphServiceClient(credentials=self.credential, scopes=self.scopes)
 
     '''
     Initialises the client
     '''
 
-    def ensure_graph_for_app_only_auth(self):
-        if not hasattr(self, 'client_credential'):
-            client_id = self.settings['clientId']
-            tenant_id = self.settings['tenantId']
-            client_secret = self.settings['clientSecret']
+    def get_group_by_name(self, group_name):
+        query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
+            select=['displayName','id'],
+            filter=f"displayName eq '{group_name}'"
+        )
 
-            self.client_credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+        request_config = RequestConfiguration(
+            query_parameters=query_params
+        )
 
-        if not hasattr(self, 'app_client'):
-            self.app_client = GraphClient(credential=self.client_credential,
-                                          scopes=['https://graph.microsoft.com/.default'])
-
-    def getGroupByName(self, group_name):
-        self.ensure_graph_for_app_only_auth()
-
-        endpoint = '/groups'
-        filter_query = f"displayName eq '{group_name}'"
-        select = 'displayName,id'
-
-        request_url = f'{endpoint}?$filter={filter_query}&$select={select}'
-
-        group_response = self.app_client.get(request_url)
-        return group_response.json()
-
+        # return asyncio.run(self.client.groups.get(request_configuration=request_config))
+        return self.loop.run_until_complete(self.client.groups.get(request_configuration=request_config))
+    
     '''
-    Create groups in AAD
+    Get all the groups from AAD
     '''
 
-    def create_group(self, name):
-        self.ensure_graph_for_app_only_auth()
-
-        request_body = {
-            "description": "Self help community for lib23",
-            "displayName": name,
-            "groupTypes": [
-                "Unified"
-            ],
-            "mailEnabled": False,
-            "mailNickname": "lib23",
-            "securityEnabled": False
-        }
-
-        request_url = '/groups'
-
-        group_response = self.app_client.post(request_url,
-                                              data=json.dumps(request_body),
-                                              headers={'Content-Type': 'application/json'})
-        return group_response.json()
-
-    '''
-       Get all the groups from AAD
-       '''
+    def get_group_id_by_name(self, group_name):
+        return self.get_group_by_name(group_name).value[0].id
 
     def get_groups(self):
-        self.ensure_graph_for_app_only_auth()
+        query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
+            select=['displayName','id'],
+            orderby='displayName'
+        )
 
-        endpoint = '/groups'
-        # Only request specific properties
-        select = 'displayName,id'
-
-        # Sort by display name
-        order_by = 'displayName'
-        request_url = f'{endpoint}?$select={select}&$orderBy={order_by}'
-
-        users_response = self.app_client.get(request_url)
-        return users_response.json()
+        request_config = RequestConfiguration(
+            query_parameters=query_params
+        )
+        return self.loop.run_until_complete(self.client.groups.get(request_configuration=request_config))
 
     '''
     Get all the group members from the group
     '''
 
-    def get_groupmembers(self, gid):
-        self.ensure_graph_for_app_only_auth()
+    def get_group_members(self, gid):
+        query_params = GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
+            select=['displayName','id','userPrincipalName']
+        )
 
-        endpoint = '/groups'
-        # Only request specific properties
-        select = 'displayName,id,userPrincipalName'
+        request_config = RequestConfiguration(
+            query_parameters=query_params
+        )
 
-        # Sort by display name
-        order_by = 'displayName'
-        request_url = f'{endpoint}/{gid}/members?$select={select}'
-
-        users_response = self.app_client.get(request_url)
-        return users_response.json()
+        return self.loop.run_until_complete(self.client.groups.by_group_id(gid).members.get(request_configuration=request_config))
 
     '''
     Extract the user and group mapping .
     This method makes recursive call to get all the group and member relationships even within nested group
     '''
 
-    @staticmethod
-    def extract_from_group(graph, gid, displayname, groupusermap, usergroupmap):
-        gms = graph.get_groupmembers(gid)
-        for gm in gms['value']:
-            if gm["@odata.type"] == "#microsoft.graph.user":
-                for gp in str(displayname).split(":"):
-                    groupusermap[gp].add((gm["displayName"], gm["userPrincipalName"]))
-                    usergroupmap[(gm["displayName"], gm["userPrincipalName"])].add(gp)
+    def extract_from_group(self, gid, displayname, groupusermap, usergroupmap):
+        gms = self.get_group_members(gid)
+        if gms and gms.value:
+            for gm in gms.value:
+                if gm.odata_type == "#microsoft.graph.user":
+                    for gp in str(displayname).split(":"):
+                        groupusermap[gp].add((gm.display_name, gm.user_principal_name))
+                        usergroupmap[(gm.display_name, gm.user_principal_name)].add(gp)
 
-            elif gm["@odata.type"] == "#microsoft.graph.group":
-                graph.extract_from_group(graph, gm["id"], displayname + ":" + gm["displayName"], groupusermap,
-                                         usergroupmap)
+                elif gm.odata_type == "#microsoft.graph.group":
+                    self.extract_from_group(gm.id, displayname + ":" + gm.display_name, groupusermap,
+                                            usergroupmap)
 
         return groupusermap, usergroupmap
 
-    @staticmethod
-    def extract_children_from_group(graph, gid, displayname, distinct_groups,
-                                    distinct_users, groupgp):
+    def extract_children_from_group(self, gid, displayname, distinct_groups: set,
+                                    distinct_users: set, entra_group_parent_map: defaultdict):
 
-        gms = graph.get_groupmembers(gid)
+        gms = self.get_group_members(gid)
         distinct_groups.add(displayname)
-        for gm in gms['value']:
-            if gm["@odata.type"] == "#microsoft.graph.user":
+        if gms and gms.value:
+            for gm in gms.value:
+                if gm.odata_type == "#microsoft.graph.user":
 
-                groupgp[displayname].add(
-                    HashableDict({'type': 'user', 'data': (gm["displayName"], gm["userPrincipalName"])}))
-                distinct_users.add((gm["displayName"], gm["userPrincipalName"]))
-            elif gm["@odata.type"] == "#microsoft.graph.group":
+                    entra_group_parent_map[displayname].add(
+                        HashableDict({'type': 'user', 'data': (gm.display_name, gm.user_principal_name)}))
+                    distinct_users.add((gm.display_name, gm.user_principal_name))
+                elif gm.odata_type == "#microsoft.graph.group":
 
-                groupgp[displayname].add(HashableDict({'type': 'group', 'data': (gm["displayName"])}))
-                distinct_groups.add(gm["displayName"])
-                graph.extract_children_from_group(graph, gm["id"], gm["displayName"], distinct_groups,
-                                                  distinct_users, groupgp)
+                    entra_group_parent_map[displayname].add(HashableDict({'type': 'group', 'data': (gm.display_name)}))
+                    distinct_groups.add(gm.display_name)
+                    self.extract_children_from_group(gm.id, gm.display_name, distinct_groups,
+                                                    distinct_users, entra_group_parent_map)
 
-        return distinct_groups, distinct_users, groupgp
+        return distinct_groups, distinct_users, entra_group_parent_map
