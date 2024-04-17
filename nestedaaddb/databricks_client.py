@@ -1,6 +1,7 @@
 import json
 import requests
 import os
+import logging
 
 '''
 Databricks client to interact with Databricks SCIM API's
@@ -17,7 +18,7 @@ class DatabricksClient:
         self.dbscimToken = os.environ.get('DB_SCIM_TOKEN')
 
         if self.dbbaseUrl is None or self.dbscimToken is None:
-            print("Please set DB_BASE_URL and DB_SCIM_TOKEN environment variables")
+            logging.error("Please set DB_BASE_URL and DB_SCIM_TOKEN environment variables")
             exit(1)
 
     '''
@@ -78,10 +79,10 @@ class DatabricksClient:
 
         if not dryrun:
             response = requests.post(api_url, data=json.dumps(u), headers=my_headers)
-            print("User created " + str(user[0]))
-            print("Response was :" + response.text)
+            logging.info("User created " + str(user[1]))
+            logging.debug("Response was :" + response.text)
         else:
-            print("User to be created " + str(user[0]))
+            logging.info("User to be created " + str(user[0]))
 
     '''
     Add or remove users in Databricks group
@@ -104,8 +105,8 @@ class DatabricksClient:
 
         if members:
             for member in members:
-                print("-----1m-----")
-                print(member)
+                logging.info("-----1m-----")
+                logging.debug(member)
                 exists = False
                 if "members" in dbg:
                     for dbmember in dbg["members"]:
@@ -122,7 +123,7 @@ class DatabricksClient:
                                 username_add = dbu["userName"]
                                 break
                         
-                        print(f"dbm is {dbmember}")
+                        logging.info(f"dbm is {dbmember}")
 
                         # Note that dbmember response is coming from databricks group api calls which gives members
                         # This does not have member email-only display
@@ -131,12 +132,12 @@ class DatabricksClient:
                         if (member["type"] == "user" and member["data"][1].casefold() == username_add.casefold()) \
                                 or (member["type"] == "group" and member["data"].casefold() == dbmember["display"].casefold()):
                             exists = True
-                            print("-----2m")
-                            print(member)
+                            logging.info("-----2m")
+                            logging.debug(member)
                             break
                 if not exists:
-                    print("-----3m")
-                    print(member)
+                    logging.info("-----3m")
+                    logging.debug(member)
                     toadd.append(member)
 
         if "members" in dbg:
@@ -160,15 +161,7 @@ class DatabricksClient:
 
         ops = []
 
-        print("Inside patchop")
-        # print("Existing group members :")
-        # print(dbg["members"])
-        # print("Final list should be :")
-        # print(members)
-        # print("To add ")
-        # print(toadd)
-        # print("To remove ")
-        # print(toremove)
+        logging.debug("Inside patchop")
 
         if len(toadd) == 0 and len(toremove) == 0:
             return
@@ -178,8 +171,8 @@ class DatabricksClient:
             
             for member in toadd:
 
-                print("----15m-----Going to add user in group-----")
-                print(member)
+                logging.info("----15m-----Going to add user in group-----")
+                logging.debug(member)
 
                 # check if it's a user
                 if member["type"] == "user":
@@ -209,11 +202,11 @@ class DatabricksClient:
         my_headers = {'Authorization': 'Bearer ' + self.dbscimToken}
         if not dryrun:
             response = requests.patch(api_url, data=ujson, headers=my_headers)
-            print("Group Existed but membership updated. Request was :" + ujson)
-            print("Response was :" + response.text)
+            logging.info("Group Existed but membership updated. Request was :" + ujson)
+            logging.debug("Response was :" + response.text)
 
         else:
-            print("Group Exists but membership need to be updated for :"
+            logging.info("Group Exists but membership need to be updated for :"
                   + dbg.get("displayName", "NoNameExist") + ". Request details-> data " + ujson + ",EndPoint :" + api_url)
 
     '''
@@ -263,7 +256,7 @@ class DatabricksClient:
         my_headers = {'Authorization': 'Bearer ' + self.dbscimToken}
         if not dryrun:
             response = requests.post(api_url, data=ujson, headers=my_headers)
-            print("Blank Group Created.Request was " + ujson)
-            print("Response was :" + response.text)
+            logging.debug("Blank Group Created.Request was " + ujson)
+            logging.debug("Response was :" + response.text)
         else:
-            print("Blank Group to be created :" + group)
+            logging.debug("Blank Group to be created :" + group)

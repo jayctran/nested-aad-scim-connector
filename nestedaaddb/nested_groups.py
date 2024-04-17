@@ -1,6 +1,4 @@
-import sys
-
-import configparser
+import logging
 from nestedaaddb.graph_client import Graph
 from nestedaaddb.databricks_client import DatabricksClient
 from collections import defaultdict
@@ -39,20 +37,20 @@ class SyncNestedGroups:
         dbusers = self.dbclient.get_dbusers()
         dbgroups = self.dbclient.get_dbgroups()
 
-        print("1.All Databricks Users and group Read")
+        logging.info("1.All Databricks Users and group Read")
 
-        print("1.1 Number of Users in databricks is :"+str(len(dbusers)))
-        print("1.1 Number of groups in databricks is :" + str(len(dbgroups["Resources"])))
+        logging.info("1.1 Number of Users in databricks is :"+str(len(dbusers)))
+        logging.info("1.1 Number of groups in databricks is :" + str(len(dbgroups["Resources"])))
 
-        print("2.Top level group requested is " + toplevelgroup)
+        logging.info("2.Top level group requested is " + toplevelgroup)
 
         group = self.graph.get_group_by_name(toplevelgroup)
 
         if not (group and group.value):
-            print("Top level group not found,exiting...")
+            logging.warning(f"'{toplevelgroup}' not found. May be a user account, service principal or a non-existent group. Skipping sync.")
             return
 
-        print("3.Top level group retrieved from AAD")
+        logging.info("3.Top level group retrieved from AAD")
 
         '''
         Indicates whether user and group collection are loaded successfully
@@ -71,10 +69,10 @@ class SyncNestedGroups:
                                                                                                  self.groupgp)
             colInitialised = True
 
-        print("4.Hierarchy analysed,going to create users and groups")
+        logging.info("4.Hierarchy analysed,going to create users and groups")
 
         if dryrun:
-            print("THIS IS DRY RUN.NO CHANGES WILL TAKE PLACE ON DATABRICKS")
+            logging.info("THIS IS DRY RUN.NO CHANGES WILL TAKE PLACE ON DATABRICKS")
 
         if colInitialised:
 
@@ -88,8 +86,8 @@ class SyncNestedGroups:
             for u in distinct_usersU:
                 exists = False
 
-                print("----0m----users identified to be present in groups selected")
-                print(u)
+                logging.debug("----0m----users identified to be present in groups selected")
+                logging.debug(f"User: {u}")
 
                 for udb in dbusers:
                     if u[1].casefold() == udb["userName"].casefold():
@@ -133,4 +131,4 @@ class SyncNestedGroups:
                         # dbusers : all databricks users
                         # dbgroups : all databricks groups
                         self.dbclient.patch_dbgroup(dbg, entra_group_parent_map.get(u) or [], dbusers, dbgroups, dryrun)
-        print("All Operation completed !")
+        logging.info("All Operation completed !")
