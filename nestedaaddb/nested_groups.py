@@ -2,7 +2,6 @@ import logging
 from nestedaaddb.graph_client import Graph
 from nestedaaddb.databricks_client import DatabricksClient
 from collections import defaultdict
-import asyncio
 
 
 class SyncNestedGroups:
@@ -21,15 +20,15 @@ class SyncNestedGroups:
     graph: Graph
     dbclient: DatabricksClient
 
-    def __init__(self, loop: asyncio.AbstractEventLoop):
-        self.graph: Graph = Graph(loop)
+    def __init__(self):
+        self.graph: Graph = Graph()
         self.dbclient: DatabricksClient = DatabricksClient()
 
     '''
     Peforms sync of Users and Groups
     '''
 
-    def sync(self, toplevelgroup, dryrun=False):
+    async def sync(self, toplevelgroup, dryrun=False):
 
         '''
         Read All Databricks users and groups
@@ -40,11 +39,11 @@ class SyncNestedGroups:
         logging.info("1.All Databricks Users and group Read")
 
         logging.info("1.1 Number of Users in databricks is :"+str(len(dbusers)))
-        logging.info("1.1 Number of groups in databricks is :" + str(len(dbgroups["Resources"])))
+        logging.info("1.1 Number of groups in databricks is :" + str(len(dbgroups)))
 
         logging.info("2.Top level group requested is " + toplevelgroup)
 
-        group = self.graph.get_group_by_name(toplevelgroup)
+        group = await self.graph.get_group_by_name(toplevelgroup)
 
         if not (group and group.value):
             logging.warning(f"'{toplevelgroup}' not found. May be a user account, service principal or a non-existent group. Skipping sync.")
@@ -62,7 +61,7 @@ class SyncNestedGroups:
         '''
         group = group.value[0]
         if toplevelgroup != "" and toplevelgroup.casefold() == group.display_name.casefold():
-            distinct_groupsU, distinct_usersU, entra_group_parent_map = self.graph.extract_children_from_group(group.id,
+            distinct_groupsU, distinct_usersU, entra_group_parent_map = await self.graph.extract_children_from_group(group.id,
                                                                                                  group.display_name,
                                                                                                  self.distinct_groups,
                                                                                                  self.distinct_users,
@@ -100,12 +99,24 @@ class SyncNestedGroups:
             for u in distinct_groupsU:
                 exists = False
 
-                for dbg in dbgroups["Resources"]:
+                for dbg in dbgroups:
                     if u.casefold() == dbg.get("displayName", "").casefold():
                         exists = True
 
                 if not exists:
                     self.dbclient.create_blank_dbgroup(u, dryrun)
+
+            # Loop through groups nested under db parent sync groups and delete if they do not exist in Entra
+            dbgroups_within_parent = self.dbclient.get_distinct_nested_dbgroups(toplevelgroup)
+            for dbg in dbgroups_within_parent:
+                # If group is not in distinct groups then no longer within nested parent sync
+                if dbg[1] not in distinct_groupsU:
+                    # Check if group exists in Entra
+                    if not await self.graph.check_group_exists(dbg[1]):
+                        # If existing Entra group does not exist then it has been deleted - also remove from DBX
+                        logging.info(f"Deleting group: {dbg[1]}")
+                        if not dryrun:
+                            self.dbclient.delete_group(dbg[0], dryrun)
 
             '''
             Reloading users from Databricks as we need id of new users as well added in last step
@@ -121,7 +132,7 @@ class SyncNestedGroups:
             '''
             for u in distinct_groupsU:
                 exists = False
-                for dbg in dbgroups["Resources"]:
+                for dbg in dbgroups:
                     if u.casefold() == dbg.get("displayName", "").casefold():
                         exists = True
                         # compare and add remove the members as needed

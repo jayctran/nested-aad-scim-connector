@@ -129,8 +129,8 @@ class DatabricksClient:
                         # This does not have member email-only display
                         # The display/user name of user in AAD and Databricks must match
                         # Even if not matched it will just be added to the to add list
-                        if (member["type"] == "user" and member["data"][1].casefold() == username_add.casefold()) \
-                                or (member["type"] == "group" and member["data"].casefold() == dbmember["display"].casefold()):
+                        if (member["type"] == "user" and member["user_principal_name"].casefold() == username_add.casefold()) \
+                                or (member["type"] == "group" and member["display_name"].casefold() == dbmember["display"].casefold()):
                             exists = True
                             logging.info("-----2m")
                             logging.debug(member)
@@ -152,8 +152,8 @@ class DatabricksClient:
                         break
 
                 for member in members:
-                    if (member["type"] == "user" and member["data"][1].casefold() == username_remove.casefold()) \
-                            or (member["type"] == "group" and member["data"].casefold() == dbmember["display"].casefold()):
+                    if (member["type"] == "user" and member["user_principal_name"].casefold() == username_remove.casefold()) \
+                            or (member["type"] == "group" and member["display_name"].casefold() == dbmember["display"].casefold()):
                         exists = True
                         break
                 if not exists:
@@ -177,13 +177,13 @@ class DatabricksClient:
                 # check if it's a user
                 if member["type"] == "user":
                     for dbu in dbus:
-                        if dbu["userName"].casefold() == member["data"][1].casefold():
+                        if dbu["userName"].casefold() == member["user_principal_name"].casefold():
                             dictsub["value"].append({"value": dbu["id"]})
                             break
                 # or if it is a group
                 elif member["type"] == "group":
-                    for dbgg in dbgroups["Resources"]:
-                        if dbgg.get("displayName", "").casefold() == member["data"].casefold():
+                    for dbgg in dbgroups:
+                        if dbgg.get("displayName", "").casefold() == member["display_name"].casefold():
                             dictsub["value"].append({"value": dbgg["id"]})
                             break
 
@@ -213,12 +213,55 @@ class DatabricksClient:
     Get all Databricks groups
     '''
 
-    def get_dbgroups(self):
-        api_url = self.dbbaseUrl + "/Groups"
+    def get_dbgroups(self, parent_group_name=None):
+        all_groups = []
 
-        my_headers = {'Authorization': 'Bearer ' + self.dbscimToken}
-        response = requests.get(api_url, headers=my_headers).text
-        return json.loads(response)
+        if parent_group_name:
+            api_url = f"{self.dbbaseUrl}/Groups?filter=displayName eq \"{parent_group_name}\""
+        else:
+            api_url = f"{self.dbbaseUrl}/Groups"
+
+        start_index=1
+        count=10000
+
+        while True:
+            my_headers = {'Authorization': 'Bearer ' + self.dbscimToken}
+            params = {
+                'startIndex': start_index,
+                'count': count
+            }
+
+            response = requests.get(api_url, headers=my_headers, params=params).text
+            groups_data = json.loads(response)
+
+            # Extract users from the current page and add them to the list
+            if 'Resources' in groups_data:
+                all_groups.extend(groups_data['Resources'])
+
+            if 'totalResults' in groups_data and len(all_groups) >= groups_data['totalResults']:
+                # If we have retrieved all users, break out of the loop
+                break
+
+            start_index += count  # Increment the startIndex for the next request
+
+        return all_groups
+
+    '''
+    Get all nested Databricks groups from Parent
+    '''
+
+    def get_distinct_nested_dbgroups(self, parent_group_name, all_group_names: set = set()):
+        parent_group = self.get_dbgroups(parent_group_name)[0]
+        all_group_names.add((parent_group["id"], parent_group["displayName"]))
+
+        if parent_group.get("members"):
+            for dbmember in parent_group["members"]:
+                if dbmember["$ref"].startswith("Groups/"):
+                    all_group_names.add((dbmember["value"], dbmember["display"]))
+
+                    self.get_distinct_nested_dbgroups(dbmember["display"], all_group_names)
+
+        return all_group_names
 
     '''
     Delete a Databricks User
@@ -235,12 +278,13 @@ class DatabricksClient:
     Delete a Databricks group
     '''
 
-    def delete_group(self, uid):
+    def delete_group(self, uid, dryrun):
         api_url = self.dbbaseUrl + "/Groups/" + uid
 
         my_headers = {'Authorization': 'Bearer ' + self.dbscimToken}
-        response = requests.delete(api_url, headers=my_headers).text
-        return response
+        if not dryrun:
+            response = requests.delete(api_url, headers=my_headers).text
+            return response
 
     def create_blank_dbgroup(self, group, dryrun):
         api_url = self.dbbaseUrl + "/Groups"
